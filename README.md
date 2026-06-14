@@ -133,7 +133,7 @@ The final object count is generated automatically.
 ## People Counting
 
 <p align="center">
-  <img src="Images/People counting result.png" width="500">
+  <img src="Images/People counting result.png" width="350">
 </p>
 
 The framework successfully detects and counts individual objects in crowded environments while maintaining accurate object separation and localization.
@@ -143,7 +143,7 @@ The framework successfully detects and counts individual objects in crowded envi
 ## Vehicle Counting
 
 <p align="center">
-  <img src="Images/Vehicle counting results.png" width="500">
+  <img src="Images/Vehicle counting results.png" width="350">
 </p>
 
 The system can also be applied to traffic-monitoring applications where vehicles are automatically identified and counted from road surveillance imagery.
