@@ -40,7 +40,7 @@ The proposed framework follows a multi-stage image-processing pipeline to detect
 ## System Architecture
 
 <p align="center">
-  <img src="Images/METHODOLOGY_IMAGE_NAME.png" width="850">
+  <img src="Images/METHODOLOGY_IMAGE_NAME.png" width="350">
 </p>
 
 > Replace **METHODOLOGY_IMAGE_NAME.png** with the actual filename of your methodology image.
@@ -143,7 +143,7 @@ The framework successfully detects and counts individual objects in crowded envi
 ## Vehicle Counting
 
 <p align="center">
-  <img src="Images/Vehicle counting results.png" width="900">
+  <img src="Images/Vehicle counting results.png" width="500">
 </p>
 
 The system can also be applied to traffic-monitoring applications where vehicles are automatically identified and counted from road surveillance imagery.
