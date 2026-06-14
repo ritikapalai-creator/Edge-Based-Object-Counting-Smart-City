@@ -133,7 +133,7 @@ The final object count is generated automatically.
 ## People Counting
 
 <p align="center">
-  <img src="Images/People counting result.png" width="900">
+  <img src="Images/People counting result.png" width="500">
 </p>
 
 The framework successfully detects and counts individual objects in crowded environments while maintaining accurate object separation and localization.
@@ -147,30 +147,6 @@ The framework successfully detects and counts individual objects in crowded envi
 </p>
 
 The system can also be applied to traffic-monitoring applications where vehicles are automatically identified and counted from road surveillance imagery.
-
----
-
-# Applications
-
-### Smart Traffic Management
-
-Vehicle counting, congestion monitoring, and traffic flow analysis.
-
-### Urban Surveillance
-
-Automated monitoring of public spaces and infrastructure.
-
-### Crowd Analytics
-
-Population estimation and movement analysis.
-
-### Smart Parking Systems
-
-Vehicle occupancy detection and parking utilization analysis.
-
-### Urban Planning
-
-Data-driven decision-making using visual analytics.
 
 ---
 
