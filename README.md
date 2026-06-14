@@ -176,15 +176,10 @@ The system can also be applied to traffic-monitoring applications where vehicles
 
 # Author
 
-**Ritika Palai**
-**Pragya Mittal**
-**Jesna Jixon**
-**Mrudula Wani**
+- **Ritika Palai**
+- **Pragya Mittal**
+- **Jesna Jixon**
+- **Mrudula Wani**
 
 ---
 
-# Citation
-
-If you use this work in your research, please cite the associated publication once officially published.
-
-Citation details will be updated after publication.
