@@ -1,0 +1,131 @@
+% ╔══════════════════════════════════════════════════════════════════════════╗
+% ║  AMR+++ Object Counter (REFINED VERSION v4)                             ║
+% ║  Featuring Texture-Gating & Perspective-Weighted Logic                   ║
+% ╚══════════════════════════════════════════════════════════════════════════╝
+
+img = imread('img00007.jpg');
+[H, W, ~] = size(img);
+
+% ─── PARAMETERS ────────────────────────────────────────────────────────
+A_MIN           = 400;          
+A_MAX           = round(H*W*0.15);  
+TEXTURE_THRESH  = 16;           % Rejects flat surfaces (road/walls)
+CANNY_SIGMA     = 0.3;         
+CLOSE_RADIUS    = 3;            % Reduced to prevent merging with background
+SE_MIN = 2; SE_MAX = 6; DENSITY_WIN = 30;
+USE_WATERSHED = true; WS_DIST_HI = 6; WS_DIST_LO = 22;
+
+fprintf('\n  Processing Image: %d x %d...\n', W, H);
+
+% ══════════════════════════════════════════════════════════════════════
+% STEP 1 — PREPROCESSING (Background Suppression)
+% ══════════════════════════════════════════════════════════════════════
+gray = rgb2gray(img);
+% Top-hat isolates objects smaller than 30px from background
+gray_th = imtophat(gray, strel('disk', 30)); 
+gray_cl = adapthisteq(gray_th, 'ClipLimit', 0.02);
+gray_g  = imgaussfilt(gray_cl, 1.0);
+
+% ══════════════════════════════════════════════════════════════════════
+% STEP 2 — TEXTURE-GATED EDGE DETECTION
+% ══════════════════════════════════════════════════════════════════════
+% 2a. Texture Mask (Standard Deviation) - Kills the road/building noise
+T_map = stdfilt(gray_g, ones(5,5));
+E_tex = T_map > TEXTURE_THRESH;
+
+% 2b. Standard Edges
+[Gx, Gy] = imgradientxy(gray_g, 'Sobel');
+Gmag = mat2gray(sqrt(Gx.^2 + Gy.^2));
+E_canny = edge(gray_g, 'Canny');
+
+% 2c. Gated Fusion: Only keep edges that appear in high-texture areas
+E = (E_canny | (Gmag > 0.2)) & E_tex;
+
+% ══════════════════════════════════════════════════════════════════════
+% STEP 3 — VERTICAL REINFORCEMENT
+% ══════════════════════════════════════════════════════════════════════
+% Use vertical line to strengthen people without merging them to the road
+E = imdilate(E, strel('line', 3, 90));
+
+% ══════════════════════════════════════════════════════════════════════
+% STEP 4 — REGION FORMATION
+% ══════════════════════════════════════════════════════════════════════
+E_filled = imfill(E, 'holes');
+E_clean  = bwareaopen(E_filled, 200);
+
+% ══════════════════════════════════════════════════════════════════════
+% STEP 5 — AMR (Adaptive Morphological Refinement)
+% ══════════════════════════════════════════════════════════════════════
+rho_map = imfilter(double(E), ones(DENSITY_WIN)/DENSITY_WIN^2, 'replicate');
+rho_avg = mean(rho_map(:));
+t_rho   = min(rho_avg / 0.20, 1.0);
+r_adapt = round(SE_MAX + (SE_MIN - SE_MAX) * t_rho);
+B_adapt = strel('disk', max(SE_MIN, min(SE_MAX, r_adapt)));
+
+E_amr = imclose(imopen(E_clean, B_adapt), B_adapt);
+E_amr = imfill(E_amr, 'holes');
+
+% ══════════════════════════════════════════════════════════════════════
+% STEP 6 — DENSITY-ADAPTIVE WATERSHED
+% ══════════════════════════════════════════════════════════════════════
+if USE_WATERSHED && sum(E_amr(:)) > 500
+    D = bwdist(~E_amr);
+    min_dist = round(WS_DIST_LO + (WS_DIST_HI - WS_DIST_LO) * t_rho);
+    D2 = imimposemin(-D, imextendedmin(-D, max(WS_DIST_HI, min_dist)));
+    L = watershed(D2);
+    E_ws = E_amr; E_ws(L == 0) = 0;
+    E_ws = bwareaopen(E_ws, 150);
+else
+    E_ws = E_amr;
+end
+
+% ══════════════════════════════════════════════════════════════════════
+% STEP 7 — SKEPTICAL GEOMETRIC FILTER
+% ══════════════════════════════════════════════════════════════════════
+cc = bwconncomp(E_ws, 8);
+stats = regionprops(cc, 'Area', 'BoundingBox', 'Solidity', 'Extent', 'PixelIdxList');
+count = 0; boxes = [];
+
+for i = 1:length(stats)
+    bb = stats(i).BoundingBox;
+    area = stats(i).Area;
+    
+    % A. Perspective Weighting
+    y_norm = (bb(2) + bb(4)) / H;
+    dynamic_A_MIN = A_MIN * (0.5 + y_norm^2);
+    if area < dynamic_A_MIN || area > A_MAX, continue; end
+    
+    % B. Internal Texture Variance check
+    pix_vals = double(gray(stats(i).PixelIdxList));
+    if std(pix_vals) < 14, continue; end % Rejects road paint/flat walls
+    
+    % C. Verticality
+    if (bb(4)/bb(3)) < 0.5 && area < (A_MAX * 0.3), continue; end
+    
+    count = count + 1;
+    boxes(end+1, :) = bb;
+end
+
+% ══════════════════════════════════════════════════════════════════════
+% STEP 8 — VISUALIZATION (Main & Debug)
+% ══════════════════════════════════════════════════════════════════════
+% MAIN FIGURE
+fig = figure('Name','AMR+++ Results','Color',[0.13 0.13 0.13]);
+subplot(2,2,1); imshow(img); title('\color{white}① Original');
+subplot(2,2,2); imshow(E_amr); title('\color{white}② Refined Regions');
+subplot(2,2,3); imshow(label2rgb(bwlabel(E_ws), 'hsv', 'k', 'shuffle')); title('\color{white}③ Segmented');
+subplot(2,2,4); imshow(img); hold on;
+for i = 1:size(boxes,1), rectangle('Position', boxes(i,:), 'EdgeColor','g','LineWidth',2); end
+title(['\color{green}Final Count: ', num2str(count)]);
+
+% DEBUG FIGURE
+figure('Name','Pipeline Debug','Color',[0.1 0.1 0.1]);
+subplot(3,3,1); imshow(gray_th); title('Top-Hat (BG Removed)');
+subplot(3,3,2); imshow(E_tex);   title('Texture Mask');
+subplot(3,3,3); imshow(E_canny); title('Raw Canny');
+subplot(3,3,4); imshow(E);       title('Gated Fusion');
+subplot(3,3,5); imshow(E_filled); title('Filled');
+subplot(3,3,6); imshow(E_clean);  title('Cleaned');
+subplot(3,3,7); imshow(E_amr);    title('After AMR');
+subplot(3,3,8); imshow(E_ws);     title('After Watershed');
+subplot(3,3,9); imshow(img);      title('Output');

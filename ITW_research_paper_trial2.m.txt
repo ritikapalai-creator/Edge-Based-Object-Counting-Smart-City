@@ -1,0 +1,357 @@
+% ╔══════════════════════════════════════════════════════════════════════════╗
+% ║  AMR+++ Object Counter                    
+% ║  Edge-Based Object Counting System for Smart City Applications           ║
+% ╚══════════════════════════════════════════════════════════════════════════╝
+
+
+% ══════════════════════════════════════════════════════════════════════
+% INPUT
+% ══════════════════════════════════════════════════════════════════════
+img = imread("C:\Users\Pragya Mittal\OneDrive\Desktop\CSBS\Sem VIII\ITW\Research Paper - AMR\dih_intersection.jpg");
+%img = imread("C:\Users\Pragya Mittal\OneDrive\Desktop\CSBS\Sem VIII\ITW\Research Paper - AMR\park_people.png");
+%img = imread("C:\Users\Pragya Mittal\OneDrive\Desktop\CSBS\Sem VIII\ITW\Research Paper - AMR\Screenshot 2026-04-08 174806.png");
+% img = imread("C:\Users\Pragya Mittal\OneDrive\Desktop\CSBS\Sem VIII\ITW\Research Paper - AMR\f90c6ac87c99ad858c3ca9b764e490ac.jpg");
+% img = imread("C:\Users\Pragya Mittal\OneDrive\Desktop\CSBS\Sem VIII\ITW\Research Paper - AMR\5851546454_302f9aa261_b.jpg");
+% img = imread("overlapping.jpg");
+[H, W, ~] = size(img);
+
+% ══════════════════════════════════════════════════════════════════════
+% PARAMETERS — tune per scene
+% ══════════════════════════════════════════════════════════════════════
+
+% ─── Area filter ────────────────────────────────────────────────────
+A_MIN           = 500;          % px²  min object area
+A_MAX           = round(H*W*0.12);  % px²  max (12% of frame)
+% ↑ For birds-eye traffic: use 600–2000
+% ↑ For pedestrians close-up: use 200–500
+
+% ─── Edge detection ────────────────────────────────────────────────
+CANNY_SIGMA     = 0.25;         % Otsu spread (lower = fewer, stronger edges)
+CLOSE_RADIUS    = 4;            % px  closing disk to form closed regions
+
+% ─── AMR structuring element ───────────────────────────────────────
+SE_MIN          = 2;            % px  min SE radius
+SE_MAX          = 7;            % px  max SE radius
+DENSITY_WIN     = 30;           % px  local density window
+
+% ─── Watershed ─────────────────────────────────────────────────────
+USE_WATERSHED   = true;
+WS_DIST_HI      = 6;            % min seed dist at MAX density (px)
+WS_DIST_LO      = 22;           % min seed dist at MIN density (px)
+
+% ─── Shape filters ──────────────────────────────────────────────────
+MAX_ASPECT      = 5.5;          % bbox long/short — road lines >> 6
+MIN_COMPACT     = 0.045;        % 4π·A/P²
+MIN_SOLIDITY    = 0.28;
+MIN_EXTENT      = 0.12;
+MAX_EXTENT      = 0.93;
+
+% ─── Border-touch filter ────────────────────────────────────────────
+BORDER_MARGIN   = 4;            % px from image edge
+BORDER_FRAC     = 0.07;         % max area fraction for border blobs
+
+% ─── Color filter (SOFT) ────────────────────────────────────────────
+USE_COLOR       = true;
+MIN_SAT_MEAN    = 6;            % HSV-S (0–255): walls/concrete ≈ 0–4
+MIN_SAT_STD     = 4;            % std of S inside region
+
+fprintf('\n╔════════════════════════════════════════╗\n');
+fprintf('  AMR+++ Object Counter (MATLAB)\n');
+fprintf('  Image: %d × %d\n', W, H);
+
+% ══════════════════════════════════════════════════════════════════════
+% STEP 1 — PREPROCESSING
+% CLAHE enhances local contrast; bilateral preserves object boundaries
+% ══════════════════════════════════════════════════════════════════════
+gray      = rgb2gray(img);
+gray_cl   = adapthisteq(gray, 'ClipLimit', 0.03, 'NumTiles', [8 8]);
+
+% Bilateral filter (requires Image Processing Toolbox ≥ R2014b)
+try
+    gray_bf = imbilatfilt(gray_cl, 600, 3);
+catch
+    gray_bf = gray_cl;   % fallback if toolbox version too old
+end
+
+% Mild Gaussian for Canny stability
+gray_g    = imgaussfilt(gray_bf, 1.0);
+
+% ══════════════════════════════════════════════════════════════════════
+% STEP 2 — DUAL EDGE DETECTION: Canny + Sobel gradient fusion
+% ══════════════════════════════════════════════════════════════════════
+
+% ── 2a. Adaptive Canny (Otsu thresholds) ──────────────────────────
+t_otsu    = graythresh(gray_g);     % [0,1]
+T_H       = min(1.0, (1 + CANNY_SIGMA) * t_otsu);
+T_L       = max(0.0, (1 - CANNY_SIGMA) * t_otsu);
+E_canny   = edge(gray_g, 'Canny', [T_L T_H]);
+
+fprintf('  Canny thresholds: T_L=%.3f  T_H=%.3f\n', T_L, T_H);
+
+% ── 2b. Sobel gradient magnitude ──────────────────────────────────
+[Gx, Gy]  = imgradientxy(gray_g, 'Sobel');
+Gmag      = sqrt(Gx.^2 + Gy.^2);
+Gmag_n    = mat2gray(Gmag);                % normalise [0,1]
+E_sobel   = Gmag_n > T_L;                  % threshold at Canny T_L
+
+% ── 2c. Fuse both edge maps ────────────────────────────────────────
+E = E_canny | E_sobel;
+
+% ══════════════════════════════════════════════════════════════════════
+% STEP 3 — EDGE STRENGTHENING (bridge 1-pixel gaps)
+% ══════════════════════════════════════════════════════════════════════
+E = imdilate(E, strel('disk', 1));
+
+% ══════════════════════════════════════════════════════════════════════
+% STEP 4 — REGION FORMATION
+% Close → imfill → remove tiny noise
+% ══════════════════════════════════════════════════════════════════════
+E_closed  = imclose(E, strel('disk', CLOSE_RADIUS));
+E_closed  = imclose(E_closed, strel('disk', CLOSE_RADIUS)); % 2nd pass
+
+% ★ Critical: fill enclosed regions
+E_filled  = imfill(E_closed, 'holes');
+
+% Remove tiny blobs (noise fragments < 120 px)
+E_clean   = bwareaopen(E_filled, 120);
+
+fprintf('  After fill: %.1f%% white pixels\n', ...
+        100 * sum(E_clean(:)) / numel(E_clean));
+
+% ══════════════════════════════════════════════════════════════════════
+% STEP 5 — AMR: ADAPTIVE MORPHOLOGICAL REFINEMENT (Eqs 10–16)
+% ══════════════════════════════════════════════════════════════════════
+
+% ── 5a. Local density estimate ────────────────────────────────────
+k_filt    = ones(DENSITY_WIN, DENSITY_WIN) / DENSITY_WIN^2;
+rho_map   = imfilter(double(E), k_filt, 'replicate');
+rho_avg   = mean(rho_map(:));
+
+% ── 5b. Adaptive SE radius (Eq. 10) ───────────────────────────────
+% t ∈ [0,1]: 0 = sparse scene, 1 = dense scene
+t_rho     = min(rho_avg / 0.25, 1.0);
+r_adapt   = round(SE_MAX + (SE_MIN - SE_MAX) * t_rho);
+r_adapt   = max(SE_MIN, min(SE_MAX, r_adapt));
+B_adapt   = strel('disk', r_adapt);
+
+fprintf('  rho_avg=%.4f  →  SE radius=%d px\n', rho_avg, r_adapt);
+
+% ── 5c. Opening: noise removal (E ⊖ B) ⊕ B ──────────────────────
+E_open    = imopen(E_clean, B_adapt);
+
+% ── 5d. Closing: gap bridging (E ⊕ B) ⊖ B ──────────────────────
+E_amr     = imclose(E_open, B_adapt);
+
+% Re-fill after morphological ops
+E_amr     = imfill(E_amr, 'holes');
+
+% ══════════════════════════════════════════════════════════════════════
+% STEP 6 — DENSITY-ADAPTIVE WATERSHED (object separation)
+% ══════════════════════════════════════════════════════════════════════
+if USE_WATERSHED && sum(E_amr(:)) > 500
+
+    % Distance transform
+    D         = bwdist(~E_amr);
+
+    % Density-adaptive minimum seed distance
+    % Dense scene → small dist → more seeds → better separation
+    min_dist  = round(WS_LO_DIST(WS_DIST_HI, WS_DIST_LO, t_rho));
+    min_dist  = max(WS_DIST_HI, min(WS_DIST_LO, min_dist));
+
+    fprintf('  Watershed min_dist=%d px\n', min_dist);
+
+    % Extended minima of negative distance (valley = object centre)
+    mask_ext  = imextendedmin(-D, min_dist);
+    D2        = imimposemin(-D, mask_ext);
+    L         = watershed(D2);
+
+    E_ws      = E_amr;
+    E_ws(L == 0) = 0;                   % erase watershed boundaries
+    E_ws      = bwareaopen(E_ws, 180);  % remove tiny post-watershed fragments
+
+else
+    E_ws      = E_amr;
+    fprintf('  Watershed: skipped (too few pixels)\n');
+end
+
+% ══════════════════════════════════════════════════════════════════════
+% STEP 7 — CONNECTED COMPONENT ANALYSIS + MULTI-CRITERIA FILTER
+% ══════════════════════════════════════════════════════════════════════
+cc    = bwconncomp(E_ws, 8);
+stats = regionprops(cc, 'Area', 'BoundingBox', 'Perimeter', ...
+                        'Extent', 'Solidity', 'PixelIdxList');
+
+img_hsv  = rgb2hsv(double(img)/255.0);   % [0,1] range
+S_chan    = img_hsv(:,:,2);
+
+count = 0;
+boxes = [];
+rejected_reasons = struct('area',0,'compact',0,'aspect',0,'extent',0,...
+                           'solidity',0,'border',0,'color',0);
+
+for i = 1:length(stats)
+
+    area = stats(i).Area;
+    peri = max(stats(i).Perimeter, 1);
+    ext  = stats(i).Extent;
+    sol  = stats(i).Solidity;
+    bb   = stats(i).BoundingBox;  % [x, y, w, h]
+    bx=bb(1); by=bb(2); bw=bb(3); bh=bb(4);
+
+    % ── Criterion 1: Area ─────────────────────────────────────────
+    if area < A_MIN || area > A_MAX
+        rejected_reasons.area = rejected_reasons.area + 1;
+        continue;
+    end
+
+    % ── Criterion 2: Compactness 4πA/P² ──────────────────────────
+    compact = (4 * pi * area) / (peri^2 + 1e-6);
+    if compact < MIN_COMPACT
+        rejected_reasons.compact = rejected_reasons.compact + 1;
+        continue;
+    end
+
+    % ── Criterion 3: Aspect ratio ─────────────────────────────────
+    aspect = max(bw, bh) / max(min(bw, bh), 1);
+    if aspect > MAX_ASPECT
+        rejected_reasons.aspect = rejected_reasons.aspect + 1;
+        continue;
+    end
+
+    % ── Criterion 4: Extent ───────────────────────────────────────
+    if ext < MIN_EXTENT || ext > MAX_EXTENT
+        rejected_reasons.extent = rejected_reasons.extent + 1;
+        continue;
+    end
+
+    % ── Criterion 5: Solidity ─────────────────────────────────────
+    if sol < MIN_SOLIDITY
+        rejected_reasons.solidity = rejected_reasons.solidity + 1;
+        continue;
+    end
+
+    % ── Criterion 6: Border-touch filter ──────────────────────────
+    t_l  = bx <= BORDER_MARGIN;
+    t_r  = (bx+bw) >= (W - BORDER_MARGIN);
+    t_t  = by <= BORDER_MARGIN;
+    t_b  = (by+bh) >= (H - BORDER_MARGIN);
+    n_b  = t_l + t_r + t_t + t_b;
+
+    if n_b >= 2
+        rejected_reasons.border = rejected_reasons.border + 1;
+        continue;
+    end
+    if n_b == 1 && area > H*W*BORDER_FRAC
+        rejected_reasons.border = rejected_reasons.border + 1;
+        continue;
+    end
+
+    % ── Criterion 7: Color saturation (SOFT) ─────────────────────
+    if USE_COLOR
+        pix_idx  = stats(i).PixelIdxList;
+        S_region = S_chan(pix_idx);
+        s_mean   = mean(S_region) * 255;   % scale to 0-255
+        s_std    = std(S_region)  * 255;
+        % Reject ONLY if BOTH near-zero mean AND near-zero variance
+        % (genuine flat gray surface — wall, concrete, plain road)
+        if s_mean < MIN_SAT_MEAN && s_std < MIN_SAT_STD
+            rejected_reasons.color = rejected_reasons.color + 1;
+            continue;
+        end
+    end
+
+    % ── All criteria passed → count it ───────────────────────────
+    count = count + 1;
+    boxes(end+1, :) = bb; %#ok<AGROW>
+end
+
+% ══════════════════════════════════════════════════════════════════════
+% STEP 8 — VISUALISATION
+% ══════════════════════════════════════════════════════════════════════
+fig = figure('Name','AMR+++ v3 Object Counter','NumberTitle','off',...
+             'Color',[0.13 0.13 0.13],'Position',[30 30 1200 880]);
+
+% Panel 1: Original
+ax1 = subplot(2,2,1); imshow(img);
+title('\fontsize{13}\color{white}① Original Image','FontWeight','bold');
+set(ax1,'Color',[0.13 0.13 0.13]);
+
+% Panel 2: Refined Binary Regions
+ax2 = subplot(2,2,2); imshow(E_amr);
+title('\fontsize{13}\color{white}② Refined Binary Regions','FontWeight','bold');
+set(ax2,'Color',[0.13 0.13 0.13]);
+
+% Panel 3: Colour-coded segmented objects
+ax3 = subplot(2,2,3);
+L_vis = bwlabel(E_ws);
+imshow(label2rgb(L_vis, 'hsv', 'w', 'shuffle'));
+title('\fontsize{13}\color{white}③ Segmented Objects','FontWeight','bold');
+set(ax3,'Color',[0.13 0.13 0.13]);
+
+% Panel 4: Counted objects with bounding boxes
+ax4 = subplot(2,2,4); imshow(img); hold on;
+for i = 1:size(boxes,1)
+    rectangle('Position', boxes(i,:), 'EdgeColor',[0 0.86 0],'LineWidth',2);
+    cx = boxes(i,1) + boxes(i,3)/2;
+    cy = boxes(i,2) + boxes(i,4)/2;
+    plot(cx, cy, '.', 'Color',[0 1 1], 'MarkerSize',10);
+end
+hold off;
+title(['\fontsize{13}\color[rgb]{0 0.86 0}④ Counted Objects: ' ...
+       num2str(count)],'FontWeight','bold');
+set(ax4,'Color',[0.13 0.13 0.13]);
+
+% Title bar
+sgtitle(sprintf('\\color{white}AMR+++ v3  |  Objects: %d  |  SE: %d px  |  Density: %.4f',...
+        count, r_adapt, rho_avg), ...
+        'FontSize',12,'FontWeight','bold','Color','white');
+set(fig,'Color',[0.13 0.13 0.13]);
+
+% ══════════════════════════════════════════════════════════════════════
+% CONSOLE REPORT
+% ══════════════════════════════════════════════════════════════════════
+total_blobs = cc.NumObjects;
+fprintf('\n╔════════════════════════════════════════╗\n');
+fprintf('  RESULT        : %d objects counted\n', count);
+fprintf('  Total regions : %d found, %d rejected\n', total_blobs, total_blobs-count);
+fprintf('────── Rejection breakdown ──────────────\n');
+fprintf('  Area filter   : %d\n', rejected_reasons.area);
+fprintf('  Compactness   : %d\n', rejected_reasons.compact);
+fprintf('  Aspect ratio  : %d\n', rejected_reasons.aspect);
+fprintf('  Extent        : %d\n', rejected_reasons.extent);
+fprintf('  Solidity      : %d\n', rejected_reasons.solidity);
+fprintf('  Border-touch  : %d\n', rejected_reasons.border);
+fprintf('  Color (gray)  : %d\n', rejected_reasons.color);
+fprintf('────── Pipeline params ──────────────────\n');
+fprintf('  SE radius     : %d px\n', r_adapt);
+fprintf('  Density ρ_avg : %.4f\n', rho_avg);
+if USE_WATERSHED
+    fprintf('  WS min_dist   : %d px\n', min_dist);
+end
+fprintf('  Canny T_L/T_H : %.3f / %.3f\n', T_L, T_H);
+fprintf('╚════════════════════════════════════════╝\n\n');
+
+% ══════════════════════════════════════════════════════════════════════
+% DEBUG FIGURE (uncomment to see all pipeline stages)
+% ══════════════════════════════════════════════════════════════════════
+figure('Name','Pipeline Debug','Color',[0.1 0.1 0.1]);
+subplot(3,3,1); imshow(gray);      title('Gray');
+subplot(3,3,2); imshow(gray_cl);   title('CLAHE');
+subplot(3,3,3); imshow(E_canny);   title('Canny');
+subplot(3,3,4); imshow(E_sobel);   title('Sobel');
+subplot(3,3,5); imshow(E);         title('Fused Edges');
+subplot(3,3,6); imshow(E_filled);  title('Filled');
+subplot(3,3,7); imshow(E_clean);   title('Cleaned');
+subplot(3,3,8); imshow(E_amr);     title('After AMR');
+subplot(3,3,9); imshow(E_ws);      title('After Watershed');
+
+
+% ══════════════════════════════════════════════════════════════════════
+% LOCAL HELPER FUNCTION
+% ══════════════════════════════════════════════════════════════════════
+function d = WS_LO_DIST(hi, lo, t)
+    % Interpolates watershed seed distance based on scene density t∈[0,1]
+    % Dense (t=1) → returns hi (small distance = more seeds)
+    % Sparse(t=0) → returns lo (large distance = fewer seeds)
+    d = round(lo + (hi - lo) * t);
+end
